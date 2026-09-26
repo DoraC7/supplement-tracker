@@ -3,3 +3,10 @@ __pycache__/
 .venv/
 health_tracker.db
 *.db
+.streamlit/secrets.toml
+.env
+.env.*
+!.env.example
+*.db-*
+*.sqlite*
+.DS_Store

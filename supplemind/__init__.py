@@ -19,15 +19,16 @@ from .errors import (
     SupplementNotFoundError,
     ValidationError,
 )
-from .models import DB_DATE_FORMAT, DB_DATETIME_FORMAT, Alert, IntakeLog, Supplement
+from .models import DB_DATE_FORMAT, DB_DATETIME_FORMAT, Alert, Conflict, IntakeLog, Supplement
 from .repository import DEFAULT_DB_PATH, SupplementManager
 from .services import (
     DEFAULT_LOOKBACK_DAYS,
+    ConflictAlert,
     ConsumptionForecast,
-    DailyBriefing,
+    TodayPlan,
     estimate_consumption_rate,
     forecast_all,
-    get_daily_briefing,
+    get_today_plan,
 )
 
 __all__ = [
@@ -38,16 +39,18 @@ __all__ = [
     "Supplement",
     "IntakeLog",
     "Alert",
+    "Conflict",
     "DB_DATE_FORMAT",
     "DB_DATETIME_FORMAT",
     "SupplementManager",
     "DEFAULT_DB_PATH",
     "ConsumptionForecast",
-    "DailyBriefing",
+    "ConflictAlert",
+    "TodayPlan",
     "DEFAULT_LOOKBACK_DAYS",
     "estimate_consumption_rate",
     "forecast_all",
-    "get_daily_briefing",
+    "get_today_plan",
     "build_parser",
     "run_cli",
     "main",

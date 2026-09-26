@@ -6,8 +6,8 @@ Kept separate from ``cli.py`` so the presentation logic can be unit tested
 
 from typing import Iterable
 
-from .models import DB_DATE_FORMAT, DB_DATETIME_FORMAT, Alert, IntakeLog, Supplement
-from .services import ConsumptionForecast, DailyBriefing
+from .models import DB_DATE_FORMAT, DB_DATETIME_FORMAT, Alert, Conflict, IntakeLog, Supplement
+from .services import ConsumptionForecast, TodayPlan
 
 
 def format_quantity(value: float) -> str:
@@ -77,6 +77,18 @@ def print_alerts(alerts: list[Alert]) -> None:
     print(render_table(["等級", "名稱", "訊息"], rows))
 
 
+def print_conflicts(conflicts: list[Conflict]) -> None:
+    if not conflicts:
+        print("目前沒有設定不能同天疊加的組合。")
+        return
+
+    rows = [
+        [conflict.id, conflict.name_a, conflict.name_b, conflict.note]
+        for conflict in conflicts
+    ]
+    print(render_table(["ID", "品項 A", "品項 B", "備註"], rows))
+
+
 def print_forecasts(forecasts: list[ConsumptionForecast]) -> None:
     if not forecasts:
         print("目前沒有任何保健品資料可估算消耗速度。")
@@ -95,18 +107,32 @@ def print_forecasts(forecasts: list[ConsumptionForecast]) -> None:
     print(render_table(["ID", "名稱", "平均消耗速度", "預估剩餘天數"], rows))
 
 
-def print_daily_briefing(briefing: DailyBriefing) -> None:
-    print("== 今日提醒（庫存/效期）==")
-    print_alerts(briefing.alerts)
+def print_today_plan(plan: TodayPlan) -> None:
+    """Render the daily decision loop in order: 今天用什麼 → 哪些不能疊 → 用完打勾 → 快用完再提醒."""
+
+    print(f"== 1. 今天用什麼（尚未打勾，{len(plan.to_take)} 項）==")
+    print_supplements(plan.to_take)
 
     print()
-    print("== 消耗速度預估 ==")
-    print_forecasts(briefing.forecasts)
+    print("== 2. 哪些不能疊 ==")
+    if not plan.conflict_alerts:
+        print("目前沒有需要注意的疊加衝突。")
+    else:
+        rows = [[alert.name_a, alert.name_b, alert.message] for alert in plan.conflict_alerts]
+        print(render_table(["品項 A", "品項 B", "提醒"], rows))
 
     print()
-    print(f"== 今天已記錄服用（{len(briefing.taken_today)} 筆）==")
-    print_history(briefing.taken_today)
+    print(f"== 3. 用完打勾（今天已服用，{len(plan.taken)} 筆）==")
+    print_history(plan.taken)
 
     print()
-    print(f"== 今天尚未記錄服用（{len(briefing.pending_today)} 項）==")
-    print_supplements(briefing.pending_today)
+    print("== 4. 快用完再提醒 ==")
+    if not plan.low_stock_alerts:
+        print("目前沒有庫存偏低的項目。")
+    else:
+        print_alerts(plan.low_stock_alerts)
+
+    if plan.expiry_alerts:
+        print()
+        print("== 其他提醒（效期）==")
+        print_alerts(plan.expiry_alerts)

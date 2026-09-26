@@ -15,6 +15,7 @@ from .models import Alert, IntakeLog, Supplement
 from .repository import SupplementManager
 
 DEFAULT_LOOKBACK_DAYS = 30
+DEFAULT_EXPIRY_WARNING_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,37 @@ class ConsumptionForecast:
 
 
 @dataclass(frozen=True)
+class ConflictAlert:
+    """A human-readable warning that two supplements should not be stacked today."""
+
+    name_a: str
+    name_b: str
+    note: str
+    message: str
+
+
+@dataclass(frozen=True)
+class TodayPlan:
+    """The daily decision loop: what to take, what not to stack, what's done, what's low.
+
+    Field order mirrors the loop the app is meant to answer every day:
+    1. ``to_take``          - 今天用什麼 (not yet logged today)
+    2. ``conflict_alerts``  - 哪些不能疊 (don't stack these together today)
+    3. ``taken``            - 用完打勾 (already logged today, via the `take` command)
+    4. ``low_stock_alerts`` - 快用完再提醒 (running low, restock soon)
+    """
+
+    to_take: list[Supplement]
+    conflict_alerts: list[ConflictAlert]
+    taken: list[IntakeLog]
+    low_stock_alerts: list[Alert]
+    expiry_alerts: list[Alert]
+
+
+@dataclass(frozen=True)
 class DailyBriefing:
+    """Dashboard-compatible summary backed by the current daily plan."""
+
     alerts: list[Alert]
     forecasts: list[ConsumptionForecast]
     taken_today: list[IntakeLog]
@@ -105,30 +136,86 @@ def forecast_all(
     return sorted(forecasts, key=sort_key)
 
 
-def get_daily_briefing(
+def _build_conflict_alerts(
     manager: SupplementManager,
-    expiry_warning_days: int = 30,
-    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
-) -> DailyBriefing:
-    """Build a one-shot "what should I do today" summary.
+    taken_ids: set[int],
+    pending_ids: set[int],
+) -> list[ConflictAlert]:
+    conflict_alerts: list[ConflictAlert] = []
 
-    Combines stock/expiry alerts, consumption forecasts, and which
-    supplements have (or have not) been logged yet today.
+    for conflict in manager.list_conflicts():
+        a_id, b_id = conflict.supplement_id_a, conflict.supplement_id_b
+        a_taken, b_taken = a_id in taken_ids, b_id in taken_ids
+        a_pending, b_pending = a_id in pending_ids, b_id in pending_ids
+        note_suffix = f"（{conflict.note}）" if conflict.note else ""
+
+        if a_taken and b_pending:
+            message = f"今天已服用「{conflict.name_a}」，先別再服用「{conflict.name_b}」{note_suffix}"
+        elif b_taken and a_pending:
+            message = f"今天已服用「{conflict.name_b}」，先別再服用「{conflict.name_a}」{note_suffix}"
+        elif a_pending and b_pending:
+            message = f"「{conflict.name_a}」與「{conflict.name_b}」不建議同天服用，今天只選一項{note_suffix}"
+        elif a_taken and b_taken:
+            message = f"今天已同時服用「{conflict.name_a}」與「{conflict.name_b}」，之後請錯開時段{note_suffix}"
+        else:
+            continue
+
+        conflict_alerts.append(
+            ConflictAlert(
+                name_a=conflict.name_a,
+                name_b=conflict.name_b,
+                note=conflict.note,
+                message=message,
+            )
+        )
+
+    return conflict_alerts
+
+
+def get_today_plan(
+    manager: SupplementManager,
+    expiry_warning_days: int = DEFAULT_EXPIRY_WARNING_DAYS,
+) -> TodayPlan:
+    """Build today's decision loop: what to take, what not to stack, what's done, what's low.
+
+    This is the app's single daily entry point: open it, see what's left to
+    take today, see which pairs shouldn't be stacked, check off what's
+    already logged, and see what's about to run out.
     """
-    alerts = manager.check_alerts(expiry_warning_days)
-    forecasts = forecast_all(manager, lookback_days=lookback_days)
-
     supplements = manager.list_supplements()
     today = date.today()
     taken_today = [
         log for log in manager.get_calendar(days=1, limit=1_000_000) if log.taken_at.date() == today
     ]
     taken_ids = {log.supplement_id for log in taken_today}
-    pending_today = [supplement for supplement in supplements if supplement.id not in taken_ids]
+    to_take = [supplement for supplement in supplements if supplement.id not in taken_ids]
+    pending_ids = {supplement.id for supplement in to_take}
 
+    conflict_alerts = _build_conflict_alerts(manager, taken_ids, pending_ids)
+
+    alerts = manager.check_alerts(expiry_warning_days)
+    low_stock_alerts = [alert for alert in alerts if alert.level == "warning"]
+    expiry_alerts = [alert for alert in alerts if alert.level != "warning"]
+
+    return TodayPlan(
+        to_take=to_take,
+        conflict_alerts=conflict_alerts,
+        taken=taken_today,
+        low_stock_alerts=low_stock_alerts,
+        expiry_alerts=expiry_alerts,
+    )
+
+
+def get_daily_briefing(
+    manager: SupplementManager,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    expiry_warning_days: int = DEFAULT_EXPIRY_WARNING_DAYS,
+) -> DailyBriefing:
+    """Preserve the dashboard API while sharing the current daily-plan logic."""
+    plan = get_today_plan(manager, expiry_warning_days=expiry_warning_days)
     return DailyBriefing(
-        alerts=alerts,
-        forecasts=forecasts,
-        taken_today=taken_today,
-        pending_today=pending_today,
+        alerts=plan.low_stock_alerts + plan.expiry_alerts,
+        forecasts=forecast_all(manager, lookback_days=lookback_days),
+        taken_today=plan.taken,
+        pending_today=plan.to_take,
     )

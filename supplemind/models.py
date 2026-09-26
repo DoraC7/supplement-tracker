@@ -32,3 +32,15 @@ class Alert:
     level: str
     name: str
     message: str
+
+
+@dataclass(frozen=True)
+class Conflict:
+    """A rule saying two supplements should not be taken on the same day."""
+
+    id: int
+    supplement_id_a: int
+    name_a: str
+    supplement_id_b: int
+    name_b: str
+    note: str

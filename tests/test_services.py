@@ -97,6 +97,14 @@ class DailyBriefingTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.manager.close()
 
+    def test_empty_briefing_is_ready_for_dashboard(self) -> None:
+        briefing = get_daily_briefing(self.manager)
+
+        self.assertEqual(briefing.alerts, [])
+        self.assertEqual(briefing.forecasts, [])
+        self.assertEqual(briefing.taken_today, [])
+        self.assertEqual(briefing.pending_today, [])
+
     def test_briefing_splits_taken_and_pending_today(self) -> None:
         taken = self.manager.add_supplement(
             name="魚油", unit="粒", stock=30, warning_level=5, expiry_date="2027-01-01"

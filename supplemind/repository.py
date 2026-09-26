@@ -16,7 +16,7 @@ from .errors import (
     SupplementNotFoundError,
     ValidationError,
 )
-from .models import DB_DATE_FORMAT, DB_DATETIME_FORMAT, Alert, IntakeLog, Supplement
+from .models import DB_DATE_FORMAT, DB_DATETIME_FORMAT, Alert, Conflict, IntakeLog, Supplement
 
 DEFAULT_DB_PATH = Path("health_tracker.db")
 
@@ -61,6 +61,20 @@ class SupplementManager:
                 taken_at TEXT NOT NULL,
                 dosage REAL NOT NULL CHECK(dosage > 0),
                 FOREIGN KEY(supplement_id) REFERENCES Supplements(id) ON DELETE CASCADE
+            )
+            """
+        )
+        self.cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS Conflicts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplement_id_a INTEGER NOT NULL,
+                supplement_id_b INTEGER NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(supplement_id_a) REFERENCES Supplements(id) ON DELETE CASCADE,
+                FOREIGN KEY(supplement_id_b) REFERENCES Supplements(id) ON DELETE CASCADE,
+                UNIQUE(supplement_id_a, supplement_id_b)
             )
             """
         )
@@ -249,6 +263,80 @@ class SupplementManager:
         rows = self.cursor.execute(query, params).fetchall()
         return [self._row_to_log(row) for row in rows]
 
+    def add_conflict(self, supp_id_a: int, supp_id_b: int, note: str = "") -> Conflict:
+        """Mark two supplements as not to be taken on the same day."""
+        supplement_a = self.get_supplement(supp_id_a)
+        supplement_b = self.get_supplement(supp_id_b)
+        if supplement_a.id == supplement_b.id:
+            raise ValidationError("Cannot create a conflict between a supplement and itself.")
+
+        # Normalize order so (a, b) and (b, a) are treated as the same rule.
+        low_id, high_id = sorted((supplement_a.id, supplement_b.id))
+        normalized_note = note.strip() if isinstance(note, str) else ""
+
+        try:
+            self.cursor.execute(
+                """
+                INSERT INTO Conflicts (supplement_id_a, supplement_id_b, note, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (low_id, high_id, normalized_note, self._now_string()),
+            )
+            self.conn.commit()
+        except sqlite3.IntegrityError as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise ValidationError(
+                    f"Conflict between '{supplement_a.name}' and '{supplement_b.name}' already exists."
+                ) from exc
+            raise
+
+        return self.get_conflict(self.cursor.lastrowid)
+
+    def get_conflict(self, conflict_id: int) -> Conflict:
+        row = self.cursor.execute(
+            """
+            SELECT
+                Conflicts.id,
+                Conflicts.supplement_id_a,
+                sa.name AS name_a,
+                Conflicts.supplement_id_b,
+                sb.name AS name_b,
+                Conflicts.note
+            FROM Conflicts
+            JOIN Supplements sa ON Conflicts.supplement_id_a = sa.id
+            JOIN Supplements sb ON Conflicts.supplement_id_b = sb.id
+            WHERE Conflicts.id = ?
+            """,
+            (self._validate_positive_int(conflict_id, "conflict_id"),),
+        ).fetchone()
+        if row is None:
+            raise ValidationError(f"Conflict id {conflict_id} not found.")
+        return self._row_to_conflict(row)
+
+    def list_conflicts(self) -> list[Conflict]:
+        rows = self.cursor.execute(
+            """
+            SELECT
+                Conflicts.id,
+                Conflicts.supplement_id_a,
+                sa.name AS name_a,
+                Conflicts.supplement_id_b,
+                sb.name AS name_b,
+                Conflicts.note
+            FROM Conflicts
+            JOIN Supplements sa ON Conflicts.supplement_id_a = sa.id
+            JOIN Supplements sb ON Conflicts.supplement_id_b = sb.id
+            ORDER BY sa.name ASC, sb.name ASC
+            """
+        ).fetchall()
+        return [self._row_to_conflict(row) for row in rows]
+
+    def remove_conflict(self, conflict_id: int) -> None:
+        # Raises ValidationError if it does not exist.
+        self.get_conflict(conflict_id)
+        self.cursor.execute("DELETE FROM Conflicts WHERE id = ?", (conflict_id,))
+        self.conn.commit()
+
     def check_alerts(self, expiry_warning_days: int = 30) -> list[Alert]:
         warning_window = self._validate_non_negative_int(expiry_warning_days, "expiry_warning_days")
         today = date.today()
@@ -308,6 +396,16 @@ class SupplementManager:
             taken_at=self._parse_datetime(row["taken_at"]),
             dosage=row["dosage"],
             unit=row["unit"],
+        )
+
+    def _row_to_conflict(self, row: sqlite3.Row) -> Conflict:
+        return Conflict(
+            id=row["id"],
+            supplement_id_a=row["supplement_id_a"],
+            name_a=row["name_a"],
+            supplement_id_b=row["supplement_id_b"],
+            name_b=row["name_b"],
+            note=row["note"],
         )
 
     @staticmethod

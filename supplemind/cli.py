@@ -12,14 +12,15 @@ from .errors import SupplementError
 from .formatting import (
     format_quantity,
     print_alerts,
-    print_daily_briefing,
+    print_conflicts,
     print_forecasts,
     print_history,
     print_supplements,
+    print_today_plan,
 )
 from .models import DB_DATE_FORMAT, DB_DATETIME_FORMAT, Supplement
 from .repository import DEFAULT_DB_PATH, SupplementManager
-from .services import DEFAULT_LOOKBACK_DAYS, forecast_all, get_daily_briefing
+from .services import DEFAULT_LOOKBACK_DAYS, forecast_all, get_today_plan
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,7 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     today_parser = subparsers.add_parser(
-        "today", help="One-shot daily briefing: alerts, forecasts, and today's intake status"
+        "today",
+        help=(
+            "Today's decision loop: what to take, what not to stack, "
+            "what's checked off, what's running low"
+        ),
     )
     today_parser.add_argument(
         "--days",
@@ -93,12 +98,25 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Warn when expiry is within this many days",
     )
-    today_parser.add_argument(
-        "--lookback-days",
-        default=DEFAULT_LOOKBACK_DAYS,
-        type=int,
-        help="How many days of intake history to use for the consumption estimate",
+
+    conflict_parser = subparsers.add_parser(
+        "conflict", help="Manage which supplements should not be taken on the same day"
     )
+    conflict_subparsers = conflict_parser.add_subparsers(dest="conflict_action", required=True)
+
+    conflict_add_parser = conflict_subparsers.add_parser(
+        "add", help="Mark two supplements as not to be stacked on the same day"
+    )
+    conflict_add_parser.add_argument("--id-a", required=True, type=int, help="First supplement id")
+    conflict_add_parser.add_argument("--id-b", required=True, type=int, help="Second supplement id")
+    conflict_add_parser.add_argument(
+        "--note", default="", help="Optional note, e.g. why they conflict"
+    )
+
+    conflict_subparsers.add_parser("list", help="List conflict rules")
+
+    conflict_remove_parser = conflict_subparsers.add_parser("remove", help="Remove a conflict rule")
+    conflict_remove_parser.add_argument("--id", required=True, type=int, help="Conflict rule id")
 
     return parser
 
@@ -173,13 +191,26 @@ def run_cli(args: argparse.Namespace) -> int:
                 return 0
 
             if args.command == "today":
-                briefing = get_daily_briefing(
-                    manager,
-                    expiry_warning_days=args.days,
-                    lookback_days=args.lookback_days,
-                )
-                print_daily_briefing(briefing)
+                plan = get_today_plan(manager, expiry_warning_days=args.days)
+                print_today_plan(plan)
                 return 0
+
+            if args.command == "conflict":
+                if args.conflict_action == "add":
+                    conflict = manager.add_conflict(args.id_a, args.id_b, note=args.note)
+                    print(
+                        f"已設定「{conflict.name_a}」與「{conflict.name_b}」不能同天服用。"
+                    )
+                    return 0
+
+                if args.conflict_action == "list":
+                    print_conflicts(manager.list_conflicts())
+                    return 0
+
+                if args.conflict_action == "remove":
+                    manager.remove_conflict(args.id)
+                    print(f"已移除疊加規則 id {args.id}。")
+                    return 0
 
     except SupplementError as exc:
         print(f"錯誤：{exc}")
